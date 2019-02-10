@@ -134,14 +134,42 @@ convert :: String -> String
 convert = exprToStr . cnf . parse . lexx;
 
 -- DPLL
--- DPLL parsing methods, converting from CNF expression
+
+-- DPLL parsing methods, converting from CNF expression, utilities
+
 -- Positive and negated literal, or boolean value
+-- [Literal] is a clause
+-- [[Literal]] is a set of clauses
 data Literal = Pos String | Neg String | Bol String deriving (Eq);
 
+-- takes set of clauses and converts to a list of literals - used when parsing from Expr
 flatten :: [[Literal]] -> [Literal];
 flatten [] = [];
 flatten (x:xs) = x ++ flatten(xs);
 
+-- takes literal and clause and deletes all occurrences of the literal from the clause
+deleteLiteral :: Literal -> [Literal] -> [Literal]
+deleteLiteral _ [] = [];
+deleteLiteral l (x:xs) = if x == l then (deleteLiteral l xs) else x:(deleteLiteral l xs); 
+
+-- negates any literal
+negateLiteral :: Literal -> Literal
+negateLiteral l = case l of 
+                        Pos s -> Neg s
+                        Neg s -> Pos s
+                        Bol s -> if s == "t" then (Bol "f") else (Bol "t");
+                        
+-- Takes clause, l, n and replaces all l literals by n literals in the clause
+replaceLiteralInClause :: [Literal] -> Literal -> Literal -> [Literal]
+replaceLiteralInClause [] _ _ = [];
+replaceLiteralInClause (x:xs) l n = if x == l then (n:(replaceLiteralInClause xs l n)) else x:(replaceLiteralInClause xs l n); 
+
+-- Takes clause set, l, n and replaces all l literals by n literals in all the clauses of the clause set
+replaceLiteralInSet :: [[Literal]] -> Literal -> Literal -> [[Literal]]
+replaceLiteralInSet [] _ _ = [];
+replaceLiteralInSet (x:xs) l n = (replaceLiteralInClause x l n):(replaceLiteralInSet xs l n);
+
+-- take an Expr and convert is to set of clauses
 cnfExprToClauseSet :: Expr -> [[Literal]]
 cnfExprToClauseSet e = case e of
     EAnd e1 e2  -> cnfExprToClauseSet(e1) ++ cnfExprToClauseSet(e2)
@@ -152,19 +180,32 @@ cnfExprToClauseSet e = case e of
     EBool s     -> [[Bol s]]
     EErr s      -> error s;
 
+-- Convert a clause to printable string
 clauseToStr :: [Literal] -> String
 clauseToStr [] = "";
-clauseToStr (x:xs) = case x of 
-                        Pos s  -> s ++ ", " ++ clauseToStr(xs)
-                        Neg s  -> "-" ++ s ++ ", " ++ clauseToStr(xs)
-                        Bol s -> s ++ ", " ++ clauseToStr(xs);
+clauseToStr (x:xs) = case xs of 
+                        []      -> case x of 
+                                    Pos s  -> s ++ clauseToStr(xs)
+                                    Neg s  -> "-" ++ s ++ clauseToStr(xs)
+                                    Bol s -> s ++ clauseToStr(xs)
+                        (y:ys)  -> case x of 
+                                    Pos s  -> s ++ ", " ++ clauseToStr(xs)
+                                    Neg s  -> "-" ++ s ++ ", " ++ clauseToStr(xs)
+                                    Bol s -> s ++ ", " ++ clauseToStr(xs);
 
+-- Convert a set of clauses to a printable string
 clauseSetToStr :: [[Literal]] -> String
 clauseSetToStr [] = "";
 clauseSetToStr (x:xs) = "{" ++ clauseToStr(x) ++ "}" ++ clauseSetToStr(xs);
 
-strToClauseSet :: String -> [[Literal]]
-strToClauseSet = cnfExprToClauseSet . strToExpr;
+-- Take a string in prefix Expr notation and convert to set of clauses by first putting it into CNF 
+strExprToClauseSet :: String -> [[Literal]]
+strExprToClauseSet = cnfExprToClauseSet . cnf . strToExpr;
+
+-- Take a string in prefix Expr notation and convert to set of clauses by first putting it into CNF and return string 
+propToClauses :: String -> String
+propToClauses = clauseSetToStr . cnfExprToClauseSet . cnf . strToExpr;
+
 
 -- DPLL actual algorithm
 
@@ -180,7 +221,8 @@ deleteTautologies :: [[Literal]] -> [[Literal]]
 deleteTautologies [] = [];
 deleteTautologies (x:xs) = if isTautologyClause(x) then deleteTautologies(xs) else x:(deleteTautologies(xs));
 
--- Delete clauses consisting of one Bol "f"
+-- Delete clauses consisting of one Bol "f" - these are redundant and can occur after case split
+-- however, we don't want to just delete "f" from the clause because that would create the empty clause
 deleteFalseClauses :: [[Literal]] -> [[Literal]]
 deleteFalseClauses [] = [];
 deleteFalseClauses (x:xs) = if x == [Bol "f"] then (deleteFalseClauses xs) else x:(deleteFalseClauses xs);
@@ -191,37 +233,25 @@ deleteFalses [] = [];
 deleteFalses (x:xs) = (deleteLiteral (Bol "f") x):(deleteFalses xs);
 
 -- Unit propagation for each unit claus {L}
-
+-- Get list of all literals that are unit literals in the set of clauses
 getUnitLiterals :: [[Literal]] -> [Literal]
 getUnitLiterals [] = [];
 getUnitLiterals (x:xs) = if length x == 1 then x ++ getUnitLiterals(xs) else getUnitLiterals(xs);
 
-isClauseContainingOneOf :: [Literal] -> [Literal] -> Bool
-isClauseContainingOneOf [] _ = False;
-isClauseContainingOneOf (x:xs) units = if (elem x units) then True else (isClauseContainingOneOf xs units);
+-- Delete all full clauses containing a given literal
+deleteClausesContainingLiteral :: [[Literal]] -> Literal -> [[Literal]]
+deleteClausesContainingLiteral [] _ = [];
+deleteClausesContainingLiteral (x:xs) l = if (elem l x) 
+                                             then (deleteClausesContainingLiteral xs l) 
+                                             else x:(deleteClausesContainingLiteral xs l);
 
-deleteLiteral :: Literal -> [Literal] -> [Literal]
-deleteLiteral _ [] = [];
-deleteLiteral l (x:xs) = if x == l then (deleteLiteral l xs) else x:(deleteLiteral l xs); 
+-- Delete all the occurrences of a literal in all the clauses it is in                              
+deleteOccurrenceOfInClauses :: [[Literal]] -> Literal -> [[Literal]]
+deleteOccurrenceOfInClauses [] _ = [];
+deleteOccurrenceOfInClauses (x:xs) l = (deleteLiteral l x):(deleteOccurrenceOfInClauses xs l);
 
-deleteAll :: [Literal] -> [Literal] -> [Literal]
-deleteAll [] xs = xs;
-deleteAll _ [] = [];
-deleteAll (l:ls) xs = deleteAll ls (deleteLiteral l xs);
-
-negateLiterals :: [Literal] -> [Literal]
-negateLiterals [] = [];
-negateLiterals (x:xs) = case x of 
-                        Pos s -> (Neg s):negateLiterals(xs)
-                        Neg s -> (Pos s):negateLiterals(xs)
-                        Bol s -> if s == "t" then (Bol "f"):xs else (Bol "t"):xs;
-
-negateLiteral :: Literal -> Literal
-negateLiteral l = case l of 
-                        Pos s -> Neg s
-                        Neg s -> Pos s
-                        Bol s -> if s == "t" then (Bol "f") else (Bol "t");
-
+-- Combining the jobs that deal with unit literals
+-- For each unit clause {L} delete all clauses {L} and also delete not(L) from all clauses 
 deleteUnitLiterals :: [[Literal]] -> [[Literal]]
 deleteUnitLiterals [] = [];
 deleteUnitLiterals xs = let units = (getUnitLiterals xs) in 
@@ -229,17 +259,6 @@ deleteUnitLiterals xs = let units = (getUnitLiterals xs) in
                                 else let unitL = units!!0
                                      in deleteUnitLiterals(deleteOccurrenceOfInClauses (deleteClausesContainingLiteral xs unitL) (negateLiteral unitL));
                                         
-
-deleteClausesContainingLiteral :: [[Literal]] -> Literal -> [[Literal]]
-deleteClausesContainingLiteral [] _ = [];
-deleteClausesContainingLiteral (x:xs) l = if (elem l x) 
-                                             then (deleteClausesContainingLiteral xs l) 
-                                             else x:(deleteClausesContainingLiteral xs l);
-
-deleteOccurrenceOfInClauses :: [[Literal]] -> Literal -> [[Literal]]
-deleteOccurrenceOfInClauses [] _ = [];
-deleteOccurrenceOfInClauses (x:xs) l = (deleteLiteral l x):(deleteOccurrenceOfInClauses xs l);
-
 -- Delete all clauses containing pure literals
 getAllDistinctLiterals :: [[Literal]] -> [Literal]
 getAllDistinctLiterals xs = let ls = flatten xs
@@ -258,28 +277,32 @@ getPures :: [[Literal]] -> [Literal];
 getPures [] = [];
 getPures xs = filter (isPure xs) (getAllDistinctLiterals xs);
 
+-- Takes a list of pure literals and checks if a clause contains any of those in the list
+isClauseContainingOneOf :: [Literal] -> [Literal] -> Bool
+isClauseContainingOneOf [] _ = False;
+isClauseContainingOneOf (x:xs) units = if (elem x units) then True else (isClauseContainingOneOf xs units);
+
+-- The accumulator is used as we want to compute the pure literals only at the beginning, 
 deleteAllPureLiteralClausesAccumulator :: [[Literal]] -> [Literal] -> [[Literal]]
 deleteAllPureLiteralClausesAccumulator [] _ = [];
 deleteAllPureLiteralClausesAccumulator (x:xs) pures = if (isClauseContainingOneOf x pures) 
                                               then (deleteAllPureLiteralClausesAccumulator xs pures)
                                               else x:(deleteAllPureLiteralClausesAccumulator xs pures);
 
+-- Computing the pure literals and running the accumulator version of the function on the pure literals
 deleteAllPureLiteralClauses :: [[Literal]] -> [[Literal]]
 deleteAllPureLiteralClauses xs = let pures = (getPures xs) 
                                  in (deleteAllPureLiteralClausesAccumulator xs pures);
 
+-- This function comprises the steps before the case split
+-- deleteFalseClauses and deleteFalses are needed to get rid of occasional clauses that would be a unit {f}
+-- this happens after case splitting, placing true false instead of the literal and running beforeCaseSplit                                  
 beforeCaseSplit :: [[Literal]] -> [[Literal]]
 beforeCaseSplit = deleteAllPureLiteralClauses . deleteUnitLiterals . deleteFalses . deleteFalseClauses . deleteTautologies;
 
 -- Case splitting
-replaceLiteralInClause :: [Literal] -> Literal -> Literal -> [Literal]
-replaceLiteralInClause [] _ _ = [];
-replaceLiteralInClause (x:xs) l n = if x == l then (n:(replaceLiteralInClause xs l n)) else x:(replaceLiteralInClause xs l n); 
-
-replaceLiteralInSet :: [[Literal]] -> Literal -> Literal -> [[Literal]]
-replaceLiteralInSet [] _ _ = [];
-replaceLiteralInSet (x:xs) l n = (replaceLiteralInClause x l n):(replaceLiteralInSet xs l n);
-
+-- Takes a set of clauses and a literal l and does case split based on substituting truth values for the literal l
+-- Returns a pair of the two possible cases fst - l is true, snd - l is false
 caseSplit :: [[Literal]] -> Literal -> ([[Literal]], [[Literal]])
 caseSplit xs (Pos l) = (replaceLiteralInSet (replaceLiteralInSet xs (Pos l) (Bol "t")) (Neg l) (Bol "f"),
                         replaceLiteralInSet (replaceLiteralInSet xs (Neg l) (Bol "t")) (Pos l) (Bol "f"));
@@ -289,32 +312,42 @@ caseSplit xs (Neg l) = (replaceLiteralInSet (replaceLiteralInSet xs (Pos l) (Bol
 
 caseSplit xs (Bol _) = error "Can't do case split on boolean";
 
--- Driver - the loop that will keep doing things before case split and case splitting appropriately
+-- Finishing the DPLL algorithm
+
 data Result = EmptyClause | EmptyClauseSet | Unfinished deriving (Eq);
 
+-- Takes clause set and returns the meaning of the set in terms of whether it is an EmptyClauseSet, contains the Empty clause,
+-- or none of them which means we can't conclude yet
 getResult :: [[Literal]] -> Result
 getResult [] = EmptyClauseSet;
 getResult xs = if (elem [] xs) then EmptyClause else Unfinished;
 
+-- Returns the first literal from the clauses
 getFirstLiteral :: [[Literal]] -> Literal
 getFirstLiteral [] = error "No literals, should not happen";
 getFirstLiteral xs = (getAllDistinctLiterals xs)!!0;
 
+-- Driver - the loop that will keep doing things before case split
+-- and case splitting if needed until we get empty clause or empty clause set
 drive :: [[Literal]] -> Result
-drive xs = let before = (beforeCaseSplit xs) in
-                                case (getResult before) of
-                                    Unfinished -> let l = getFirstLiteral before
-                                                      cases = caseSplit before l
-                                                  in if (drive (fst cases)) == EmptyClauseSet 
-                                                     then EmptyClauseSet  
-                                                     else if (drive (snd cases)) == EmptyClauseSet
-                                                          then EmptyClauseSet
-                                                          else EmptyClause
-                                    _ -> getResult before;
+drive xs = let before = (beforeCaseSplit xs) 
+           in case (getResult before) of
+                Unfinished -> let l = getFirstLiteral before
+                                  cases = caseSplit before l
+                              in if (drive (fst cases)) == EmptyClauseSet 
+                                    then EmptyClauseSet  
+                                    else if (drive (snd cases)) == EmptyClauseSet
+                                        then EmptyClauseSet
+                                        else EmptyClause
+                _ -> getResult before;
 
+-- Converts result to printable string
 resultToStr :: Result -> String
 resultToStr r = case r of
             EmptyClause    -> "Refuted"
             EmptyClauseSet -> "Satisfiable"
             Unfinished     -> "Unfinished";
 
+--DPLL - the combination of steps that performs the whole dpll, from set of clauses to Refuted or Satisfiable
+dpll :: [[Literal]] -> String
+dpll = resultToStr . drive;
