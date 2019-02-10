@@ -156,7 +156,7 @@ clauseToStr :: [Literal] -> String
 clauseToStr [] = "";
 clauseToStr (x:xs) = case x of 
                         Pos s  -> s ++ ", " ++ clauseToStr(xs)
-                        Neg s  -> "¬" ++ s ++ ", " ++ clauseToStr(xs)
+                        Neg s  -> "-" ++ s ++ ", " ++ clauseToStr(xs)
                         Bol s -> s ++ ", " ++ clauseToStr(xs);
 
 clauseSetToStr :: [[Literal]] -> String
@@ -180,20 +180,141 @@ deleteTautologies :: [[Literal]] -> [[Literal]]
 deleteTautologies [] = [];
 deleteTautologies (x:xs) = if isTautologyClause(x) then deleteTautologies(xs) else x:(deleteTautologies(xs));
 
+-- Delete clauses consisting of one Bol "f"
+deleteFalseClauses :: [[Literal]] -> [[Literal]]
+deleteFalseClauses [] = [];
+deleteFalseClauses (x:xs) = if x == [Bol "f"] then (deleteFalseClauses xs) else x:(deleteFalseClauses xs);
+
+-- Deleting Bol "f" literals in clauses - as they have no meaning
+deleteFalses :: [[Literal]] -> [[Literal]]
+deleteFalses [] = [];
+deleteFalses (x:xs) = (deleteLiteral (Bol "f") x):(deleteFalses xs);
+
 -- Unit propagation for each unit claus {L}
 
--- Delete all clauses containing L
 getUnitLiterals :: [[Literal]] -> [Literal]
 getUnitLiterals [] = [];
 getUnitLiterals (x:xs) = if length x == 1 then x ++ getUnitLiterals(xs) else getUnitLiterals(xs);
 
-isUnitClause :: [Literal] -> [Literal] -> Bool
-isUnitClause [] _ = False;
-isUnitClause (x:xs) units = if (elem x units) then True else (isUnitClause xs units);
+isClauseContainingOneOf :: [Literal] -> [Literal] -> Bool
+isClauseContainingOneOf [] _ = False;
+isClauseContainingOneOf (x:xs) units = if (elem x units) then True else (isClauseContainingOneOf xs units);
+
+deleteLiteral :: Literal -> [Literal] -> [Literal]
+deleteLiteral _ [] = [];
+deleteLiteral l (x:xs) = if x == l then (deleteLiteral l xs) else x:(deleteLiteral l xs); 
+
+deleteAll :: [Literal] -> [Literal] -> [Literal]
+deleteAll [] xs = xs;
+deleteAll _ [] = [];
+deleteAll (l:ls) xs = deleteAll ls (deleteLiteral l xs);
+
+negateLiterals :: [Literal] -> [Literal]
+negateLiterals [] = [];
+negateLiterals (x:xs) = case x of 
+                        Pos s -> (Neg s):negateLiterals(xs)
+                        Neg s -> (Pos s):negateLiterals(xs)
+                        Bol s -> if s == "t" then (Bol "f"):xs else (Bol "t"):xs;
+
+negateLiteral :: Literal -> Literal
+negateLiteral l = case l of 
+                        Pos s -> Neg s
+                        Neg s -> Pos s
+                        Bol s -> if s == "t" then (Bol "f") else (Bol "t");
 
 deleteUnitLiterals :: [[Literal]] -> [[Literal]]
 deleteUnitLiterals [] = [];
-deleteUnitLiterals (x:xs) = let units = (getUnitLiterals (x:xs)) in if (isUnitClause x units) then (deleteUnitLiterals xs) else x:(deleteUnitLiterals xs);
+deleteUnitLiterals xs = let units = (getUnitLiterals xs) in 
+                                if (length units) == 0 then xs
+                                else let unitL = units!!0
+                                     in deleteUnitLiterals(deleteOccurrenceOfInClauses (deleteClausesContainingLiteral xs unitL) (negateLiteral unitL));
+                                        
 
--- Delete ¬L from all clauses
---deleteNegOfUnitLiterals :: [[Literal]] -> [[]]
+deleteClausesContainingLiteral :: [[Literal]] -> Literal -> [[Literal]]
+deleteClausesContainingLiteral [] _ = [];
+deleteClausesContainingLiteral (x:xs) l = if (elem l x) 
+                                             then (deleteClausesContainingLiteral xs l) 
+                                             else x:(deleteClausesContainingLiteral xs l);
+
+deleteOccurrenceOfInClauses :: [[Literal]] -> Literal -> [[Literal]]
+deleteOccurrenceOfInClauses [] _ = [];
+deleteOccurrenceOfInClauses (x:xs) l = (deleteLiteral l x):(deleteOccurrenceOfInClauses xs l);
+
+-- Delete all clauses containing pure literals
+getAllDistinctLiterals :: [[Literal]] -> [Literal]
+getAllDistinctLiterals xs = let ls = flatten xs
+                                f :: [Literal] -> Literal -> [Literal]
+                                f l a = if (elem a l) then l else (a:l)
+                            in foldl f [] ls;
+
+-- takes list of clauses and checks if given literal is pure in it
+isPure :: [[Literal]] -> Literal -> Bool
+isPure [] _ = True;
+isPure (x:xs) (Neg s) = if (elem (Pos s) x) then False else (isPure xs (Neg s));
+isPure (x:xs) (Pos s) = if (elem (Neg s) x) then False else (isPure xs (Pos s));
+isPure (x:xs) _ = False;
+
+getPures :: [[Literal]] -> [Literal];
+getPures [] = [];
+getPures xs = filter (isPure xs) (getAllDistinctLiterals xs);
+
+deleteAllPureLiteralClausesAccumulator :: [[Literal]] -> [Literal] -> [[Literal]]
+deleteAllPureLiteralClausesAccumulator [] _ = [];
+deleteAllPureLiteralClausesAccumulator (x:xs) pures = if (isClauseContainingOneOf x pures) 
+                                              then (deleteAllPureLiteralClausesAccumulator xs pures)
+                                              else x:(deleteAllPureLiteralClausesAccumulator xs pures);
+
+deleteAllPureLiteralClauses :: [[Literal]] -> [[Literal]]
+deleteAllPureLiteralClauses xs = let pures = (getPures xs) 
+                                 in (deleteAllPureLiteralClausesAccumulator xs pures);
+
+beforeCaseSplit :: [[Literal]] -> [[Literal]]
+beforeCaseSplit = deleteAllPureLiteralClauses . deleteUnitLiterals . deleteFalses . deleteFalseClauses . deleteTautologies;
+
+-- Case splitting
+replaceLiteralInClause :: [Literal] -> Literal -> Literal -> [Literal]
+replaceLiteralInClause [] _ _ = [];
+replaceLiteralInClause (x:xs) l n = if x == l then (n:(replaceLiteralInClause xs l n)) else x:(replaceLiteralInClause xs l n); 
+
+replaceLiteralInSet :: [[Literal]] -> Literal -> Literal -> [[Literal]]
+replaceLiteralInSet [] _ _ = [];
+replaceLiteralInSet (x:xs) l n = (replaceLiteralInClause x l n):(replaceLiteralInSet xs l n);
+
+caseSplit :: [[Literal]] -> Literal -> ([[Literal]], [[Literal]])
+caseSplit xs (Pos l) = (replaceLiteralInSet (replaceLiteralInSet xs (Pos l) (Bol "t")) (Neg l) (Bol "f"),
+                        replaceLiteralInSet (replaceLiteralInSet xs (Neg l) (Bol "t")) (Pos l) (Bol "f"));
+
+caseSplit xs (Neg l) = (replaceLiteralInSet (replaceLiteralInSet xs (Pos l) (Bol "t")) (Neg l) (Bol "f"),
+                        replaceLiteralInSet (replaceLiteralInSet xs (Neg l) (Bol "t")) (Pos l) (Bol "f"));
+
+caseSplit xs (Bol _) = error "Can't do case split on boolean";
+
+-- Driver - the loop that will keep doing things before case split and case splitting appropriately
+data Result = EmptyClause | EmptyClauseSet | Unfinished deriving (Eq);
+
+getResult :: [[Literal]] -> Result
+getResult [] = EmptyClauseSet;
+getResult xs = if (elem [] xs) then EmptyClause else Unfinished;
+
+getFirstLiteral :: [[Literal]] -> Literal
+getFirstLiteral [] = error "No literals, should not happen";
+getFirstLiteral xs = (getAllDistinctLiterals xs)!!0;
+
+drive :: [[Literal]] -> Result
+drive xs = let before = (beforeCaseSplit xs) in
+                                case (getResult before) of
+                                    Unfinished -> let l = getFirstLiteral before
+                                                      cases = caseSplit before l
+                                                  in if (drive (fst cases)) == EmptyClauseSet 
+                                                     then EmptyClauseSet  
+                                                     else if (drive (snd cases)) == EmptyClauseSet
+                                                          then EmptyClauseSet
+                                                          else EmptyClause
+                                    _ -> getResult before;
+
+resultToStr :: Result -> String
+resultToStr r = case r of
+            EmptyClause    -> "Refuted"
+            EmptyClauseSet -> "Satisfiable"
+            Unfinished     -> "Unfinished";
+
