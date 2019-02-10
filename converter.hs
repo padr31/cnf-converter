@@ -127,14 +127,73 @@ pushDisjIn e = case e of
 cnf :: Expr -> Expr
 cnf = pushDisjIn . elimNot . elimImpl;
 
+strToExpr :: String -> Expr
+strToExpr = parse . lexx;
+
 convert :: String -> String
 convert = exprToStr . cnf . parse . lexx;
 
+-- DPLL
+-- DPLL parsing methods, converting from CNF expression
+-- Positive and negated literal, or boolean value
+data Literal = Pos String | Neg String | Bol String deriving (Eq);
 
+flatten :: [[Literal]] -> [Literal];
+flatten [] = [];
+flatten (x:xs) = x ++ flatten(xs);
 
+cnfExprToClauseSet :: Expr -> [[Literal]]
+cnfExprToClauseSet e = case e of
+    EAnd e1 e2  -> cnfExprToClauseSet(e1) ++ cnfExprToClauseSet(e2)
+    EOr e1 e2   -> [ flatten(cnfExprToClauseSet(e1)) ++ flatten(cnfExprToClauseSet(e2)) ]
+    EImpl e1 e2 -> error "not a valid cnf"
+    ENot (EId s)  -> [[Neg s]]
+    EId s       -> [[Pos s]]
+    EBool s     -> [[Bol s]]
+    EErr s      -> error s;
 
+clauseToStr :: [Literal] -> String
+clauseToStr [] = "";
+clauseToStr (x:xs) = case x of 
+                        Pos s  -> s ++ ", " ++ clauseToStr(xs)
+                        Neg s  -> "¬" ++ s ++ ", " ++ clauseToStr(xs)
+                        Bol s -> s ++ ", " ++ clauseToStr(xs);
 
+clauseSetToStr :: [[Literal]] -> String
+clauseSetToStr [] = "";
+clauseSetToStr (x:xs) = "{" ++ clauseToStr(x) ++ "}" ++ clauseSetToStr(xs);
 
+strToClauseSet :: String -> [[Literal]]
+strToClauseSet = cnfExprToClauseSet . strToExpr;
 
+-- DPLL actual algorithm
 
-                 
+-- Deleting tautologic clauses
+isTautologyClause :: [Literal] -> Bool
+isTautologyClause [] = False;
+isTautologyClause (x:xs) = case x of 
+                                Pos s -> (elem (Neg s) xs) || (isTautologyClause(xs))
+                                Neg s -> (elem (Pos s) xs) || (isTautologyClause(xs))
+                                Bol s -> if s == "t" then True else isTautologyClause(xs);
+
+deleteTautologies :: [[Literal]] -> [[Literal]]
+deleteTautologies [] = [];
+deleteTautologies (x:xs) = if isTautologyClause(x) then deleteTautologies(xs) else x:(deleteTautologies(xs));
+
+-- Unit propagation for each unit claus {L}
+
+-- Delete all clauses containing L
+getUnitLiterals :: [[Literal]] -> [Literal]
+getUnitLiterals [] = [];
+getUnitLiterals (x:xs) = if length x == 1 then x ++ getUnitLiterals(xs) else getUnitLiterals(xs);
+
+isUnitClause :: [Literal] -> [Literal] -> Bool
+isUnitClause [] _ = False;
+isUnitClause (x:xs) units = if (elem x units) then True else (isUnitClause xs units);
+
+deleteUnitLiterals :: [[Literal]] -> [[Literal]]
+deleteUnitLiterals [] = [];
+deleteUnitLiterals (x:xs) = let units = (getUnitLiterals (x:xs)) in if (isUnitClause x units) then (deleteUnitLiterals xs) else x:(deleteUnitLiterals xs);
+
+-- Delete ¬L from all clauses
+--deleteNegOfUnitLiterals :: [[Literal]] -> [[]]
